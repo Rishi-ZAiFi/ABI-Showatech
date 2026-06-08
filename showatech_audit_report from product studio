@@ -1,0 +1,637 @@
+# ShowaTech AR Authoring Platform — Architectural Audit Report
+**Codebase:** Product Configurator (`webgl_product_configurator`)  
+**Audit Date:** 2026-06-08  
+**Auditor:** Antigravity (AI Audit)  
+**Target Platform:** ShowaTech — AR Work Instruction Authoring for Aerospace Manufacturing  
+
+---
+
+## 1. High-Level Architecture
+
+| Layer | Current Implementation | Evidence |
+|---|---|---|
+| **Frontend Framework** | React 19 + TypeScript (Vite 7) | `package.json` → `"react": "^19.2.0"`, `vite.config.ts` |
+| **Backend Framework** | **None** — fully client-side SPA | No server directory, no API routes, no `express`/`fastapi`/etc. |
+| **Database** | **None** — all state is in-memory (RAM) | `CacheService` uses `Map<string, CacheEntry>` in `cache.service.ts` |
+| **Storage System** | Browser Memory + `Object URL` (blob) | `FileService.createObjectUrl()` in `file.service.ts` |
+| **Authentication** | **None** | No auth library, no login route |
+| **3D Rendering Engine** | Three.js `^0.159.0` + React Three Fiber `^9.2.3` | `package.json`, `CanvasRoot.tsx` uses `<Canvas>` from `@react-three/fiber` |
+| **State Management** | Zustand `^4.5.0` — single global store | `store/configurator.store.ts` — `useConfiguratorStore` |
+| **API Architecture** | **None** — no REST, no GraphQL, no WebSocket | Pure in-browser data flow |
+| **Styling** | Tailwind CSS v4 + shadcn/ui components | `tailwind.config.ts`, `components/ui/` |
+
+> [!IMPORTANT]
+> This is a **pure frontend application with zero backend**. Every piece of state lives in a React + Zustand in-memory store. Nothing is persisted beyond the browser session.
+
+---
+
+## 2. Folder Structure
+
+```
+src/
+├── app/
+│   └── App.tsx                    # Root layout — conditional empty-state vs loaded-state
+│
+├── components/
+│   ├── configurator/              # Domain-specific UI widgets
+│   │   ├── AnimationPanel.tsx     # Clip selector, timeline scrubber, play/pause
+│   │   ├── ColorControl.tsx       # Hex color picker (react-colorful) per material
+│   │   ├── FileUploader.tsx       # Drag-drop zone + multi-step GLTF workflow dialog
+│   │   ├── MaterialPanel.tsx      # Lists all materials, renders ColorControl + TextureMapIndicator
+│   │   ├── MeshPanel.tsx          # Lists all meshes with VisibilityToggle per row
+│   │   ├── TextureMapIndicator.tsx# Badge icons showing which texture maps are present
+│   │   └── VisibilityToggle.tsx   # Eye/EyeOff icon button bound to toggleMeshVisibility()
+│   │
+│   ├── layout/                    # App shell UI
+│   │   ├── Inspector.tsx          # Right panel — Tabs: Configurator / Statistics
+│   │   ├── Sidebar.tsx            # Stub (empty)
+│   │   ├── TopBar.tsx             # App title + Export GLB + Open Model + ThemeSwitcher
+│   │   └── Viewport.tsx           # Hosts CanvasRoot + ViewModeToolbar overlay
+│   │
+│   ├── theme/                     # Dark/light mode support
+│   └── ui/                        # shadcn/ui component library (18 components)
+│
+├── services/                      # Pure functions, no side effects on state
+│   ├── cache.service.ts           # LRU-style in-memory Map cache (500MB cap)
+│   ├── converter.service.ts       # FBX/OBJ/GLTF → GLB conversion via Three.js loaders
+│   ├── file.service.ts            # File reading (ArrayBuffer), extension checks
+│   └── loader.service.ts          # Orchestrates: read → convert → cache → GLTFLoader
+│
+├── store/
+│   └── configurator.store.ts      # Zustand store: meshes, materials, animations, scene, UI flags
+│
+├── three/                         # All Three.js / R3F logic
+│   ├── CanvasRoot.tsx             # R3F <Canvas> with camera, gl settings, HDRI Environment
+│   ├── ModelLoader.tsx            # Headless component wiring useConfiguratorScene + useAnimationMixer
+│   ├── ModelParser.ts             # Traverses THREE.Group → extracts ConfigMesh[], ConfigMaterial[]
+│   ├── SceneSetup.tsx             # Lights (ambient, key, fill, rim, point) + OrbitControls
+│   ├── useAnimationMixer.ts       # THREE.AnimationMixer hook — play/pause/speed/scrub
+│   ├── useConfiguratorScene.ts    # Loads GLB, calls ModelParser, fits camera
+│   └── exporters/
+│       └── exportToGLB.ts         # GLTFExporter → downloads .glb with hidden meshes removed
+│
+├── types/
+│   ├── ConfigMaterial.ts          # id, name, color, ref (THREE.Material), texture map flags
+│   ├── ConfigMesh.ts              # id, name, visible, materialId, ref (THREE.Mesh)
+│   └── ConfigModel.ts             # id, name, url, scene, meshCount, AnimationClip[]
+│
+└── utils/
+    ├── texture.utils.ts           # Extracts texture previews from materials as data URLs
+    └── three.utils.ts             # Camera fit, color conversion, ID generation, disposal
+```
+
+---
+
+## 3. 3D Capabilities Audit
+
+### Upload 3D Models
+**Status: ✅ Reusable**  
+Evidence: `FileUploader.tsx` → drag-drop + `<input type="file">`, multi-step GLTF dialog. `LoaderService.loadModelFromFile()` handles all format routing.
+
+### Supported Formats
+**Status: ✅ Reusable**  
+Evidence: `FileService.SUPPORTED_FORMATS = ['.glb', '.gltf', '.fbx', '.obj']` in `file.service.ts`. STEP and JT (common aerospace CAD formats) are **not supported** — new development required for those.
+
+### How Models Are Stored
+**Status: ⚠️ Partially Reusable**  
+Evidence: `CacheService` stores blob Object URLs in a JavaScript `Map` — **in-memory only, cleared on page reload**. No IndexedDB, no server storage, no cloud storage. For ShowaTech, persistent model storage (S3/Azure Blob/filesystem) must be added.
+
+### How Models Are Rendered
+**Status: ✅ Reusable**  
+Evidence: `CanvasRoot.tsx` → R3F `<Canvas>` → `SceneSetup.tsx` (lights + OrbitControls) → `ModelLoader.tsx` → `useConfiguratorScene.ts` → `LoaderService.loadGlb()` → `GLTFLoader` → `THREE.Group` added to scene.
+
+### Uses Three.js
+**Status: ✅ Yes**  
+Evidence: `package.json` → `"three": "^0.159.0"`. Used directly in `SceneSetup.tsx`, `ModelParser.ts`, `useAnimationMixer.ts`, `Viewport.tsx`, `exportToGLB.ts`.
+
+### Uses React Three Fiber
+**Status: ✅ Yes**  
+Evidence: `package.json` → `"@react-three/fiber": "^9.2.3"`. Used in `CanvasRoot.tsx` (`<Canvas>`, `useThree`), `useAnimationMixer.ts` (`useFrame`), `useConfiguratorScene.ts` (`useThree`).
+
+### Model Interaction (orbit/pan/zoom)
+**Status: ✅ Reusable**  
+Evidence: `SceneSetup.tsx` → `OrbitControls` from `three/examples/jsm/controls/OrbitControls`. Rotation, pan, zoom, damping all configured.
+
+### Raycasting (click-to-select mesh)
+**Status: ❌ Not Present — New Development Required**  
+Evidence: Zero references to `THREE.Raycaster`, `onPointerDown`, `onClick` on mesh objects, or `useThree` for intersection tests anywhere in the codebase. The canvas receives no click event handlers. This is **critical missing infrastructure** for ShowaTech mesh region selection.
+
+### Annotations (3D labels/pins)
+**Status: ❌ Not Present — New Development Required**  
+Evidence: No `CSS2DRenderer`, no `CSS3DRenderer`, no `Sprite`, no billboard labels, no annotation data model anywhere in the codebase.
+
+### Scene Editing (add/remove objects)
+**Status: ⚠️ Partially Present**  
+Evidence: `toggleMeshVisibility()` in `configurator.store.ts` mutates `mesh.ref.visible` — this is the only form of scene editing. No object placement, transformation gizmos, or hierarchy editing exists.
+
+---
+
+## 4. Domain Model Analysis
+
+### ConfigMesh
+- **Purpose:** Represents a single `THREE.Mesh` within the loaded model.
+- **File:** `src/types/ConfigMesh.ts`
+- **Fields:** `id` (string), `name` (string), `visible` (boolean), `materialId` (string), `ref` (THREE.Mesh)
+- **Database Tables:** None (in-memory)
+- **Related APIs:** None
+- **Related UI Pages:** `MeshPanel.tsx` (list), `VisibilityToggle.tsx` (action)
+
+### ConfigMaterial
+- **Purpose:** Represents a material extracted from the model, with color and texture map metadata.
+- **File:** `src/types/ConfigMaterial.ts`
+- **Fields:** `id`, `name`, `color` (hex string), `ref` (THREE.Material), texture map booleans (5 flags), texture preview data URLs (5 fields)
+- **Database Tables:** None
+- **Related APIs:** None
+- **Related UI Pages:** `MaterialPanel.tsx`, `ColorControl.tsx`, `TextureMapIndicator.tsx`
+
+### ConfigModel
+- **Purpose:** Wrapper holding scene metadata and animation clips.
+- **File:** `src/types/ConfigModel.ts`
+- **Fields:** `id`, `name`, `url`, `scene` (THREE.Group), `meshCount`, `materialCount`, `animations[]`, `hasAnimations`
+- **Database Tables:** None
+- **Related APIs:** None
+- **Related UI Pages:** `TopBar.tsx` (model name display)
+
+### AnimationClip
+- **Purpose:** Wraps a `THREE.AnimationClip` with a UI-facing `id` and `name`.
+- **File:** `src/types/ConfigModel.ts`
+- **Fields:** `id`, `name`, `duration`, `clip` (THREE.AnimationClip)
+- **Related UI Pages:** `AnimationPanel.tsx`
+
+### ConfiguratorState (Zustand Store)
+- **Purpose:** Global runtime state for the entire application.
+- **File:** `src/store/configurator.store.ts`
+- **Key Fields:** `modelUrl`, `modelName`, `scene`, `meshes[]`, `materials[]`, `animations[]`, `currentAnimationId`, `animationSpeed`, `animationTime`, `isAnimationPlaying`, `isLoading`, `hdriIntensity`, `fitCameraRequest`
+- **Database Tables:** None — all in-memory, reset on page reload.
+
+> [!WARNING]
+> There is **no User entity, no Project entity, no Guide entity, no Step entity**. The application has no concept of persistent user work, saved projects, or workflow states.
+
+---
+
+## 5. Reuse Analysis For ShowaTech
+
+| Module | File(s) | Classification | Reason |
+|---|---|---|---|
+| File Upload (drag-drop + format detect) | `FileUploader.tsx`, `file.service.ts` | **B. Modify** | Core logic is solid; rename, restyle, add STEP/JT support |
+| Format Conversion Pipeline | `converter.service.ts` | **B. Modify** | Expand to support STEP/JT → GLB for aerospace CAD files |
+| Model Cache | `cache.service.ts` | **C. Remove** | Must be replaced with persistent backend storage |
+| GLB Loader | `loader.service.ts` | **B. Modify** | Keep GLTFLoader pipeline; add server-fetch path for stored models |
+| Three.js Canvas Setup | `CanvasRoot.tsx` | **A. Reuse As-Is** | R3F Canvas, HDRI, camera setup all reusable |
+| Scene Lighting | `SceneSetup.tsx` | **A. Reuse As-Is** | Lighting rig is production quality |
+| Orbit Controls | `SceneSetup.tsx` | **A. Reuse As-Is** | Interactive camera exactly what HoloLens preview needs |
+| Model Parser (mesh/material extraction) | `ModelParser.ts`, `ModelLoader.tsx` | **A. Reuse As-Is** | Core traversal logic is exactly what's needed for step authoring |
+| Animation System | `useAnimationMixer.ts`, `AnimationPanel.tsx` | **A. Reuse As-Is** | Directly useful for step-linked assembly animations |
+| Mesh Visibility Toggle | `MeshPanel.tsx`, `VisibilityToggle.tsx` | **B. Modify** | Repurpose as "highlight target part" in step authoring |
+| Material Color Control | `ColorControl.tsx`, `MaterialPanel.tsx` | **B. Modify** | Repurpose for part highlighting/color coding per step |
+| Statistics Panel | `Inspector.tsx` (statistics tab) | **C. Remove** | Not relevant to manufacturing instructions |
+| GLB Exporter | `exportToGLB.ts` | **B. Modify** | Add JSON export for HoloLens runtime consumption |
+| Wireframe mode | `Viewport.tsx` → ViewModeToolbar | **B. Modify** | Keep as visual aid; repurpose for X-ray view |
+| Zustand Store | `configurator.store.ts` | **B. Modify** | Extend with Guide/Step/Annotation state slices |
+| UI Component Library | `components/ui/` (18 components) | **A. Reuse As-Is** | shadcn components are fully generic |
+| Raycasting / Mesh Selection | — | **D. New Development Required** | Does not exist; critical for region tagging |
+| Annotation System | — | **D. New Development Required** | Does not exist; needed for instruction placement |
+| Backend / Database / Auth | — | **D. New Development Required** | Zero backend infrastructure |
+| Guide / Workflow Editor UI | — | **D. New Development Required** | No authoring workflow UI exists |
+| Step Management System | — | **D. New Development Required** | No step creation/ordering/editing |
+| HoloLens JSON Export | — | **D. New Development Required** | No serialization format for AR runtime |
+| User / Project Management | — | **D. New Development Required** | No concept of users, projects, or saved work |
+
+---
+
+## 6. ShowaTech Entity Mapping
+
+| Current Entity | Maps To ShowaTech Entity | Notes |
+|---|---|---|
+| `ConfigModel` | `CADModel` | Add server storage URL, format metadata, version |
+| `ConfigMesh` | `ModelRegion` | Add `regionType`, link to `StepTarget`, keep `ref` |
+| `ConfigMaterial` | `MaterialOverride` | Repurpose per-step highlight color |
+| `AnimationClip` | `StepAnimation` | Link animation clips to specific workflow steps |
+| `ConfiguratorState` | `AuthoringSession` | Extend with `Guide`, `Step`, `Annotation` slices |
+| *(none)* | `Guide` | New: title, description, modelId, steps[], published, version |
+| *(none)* | `WorkflowStep` | New: stepNumber, title, instruction text, targetMeshIds[], annotationIds[], animationId |
+| *(none)* | `Annotation` | New: id, stepId, position (Vector3), normal (Vector3), label, type (warning/info/caution) |
+| *(none)* | `User` | New: id, name, email, role (Author/Reviewer/Viewer) |
+| *(none)* | `Project` | New: id, name, aircraftType, modelIds[], guideIds[] |
+| *(none)* | `PublishedGuide` | New: exported JSON blob consumed by HoloLens Unity app |
+
+---
+
+## 7. Workflow Gap Analysis
+
+### Target Workflow vs Current Capabilities
+
+```
+Upload CAD Model → [✅ EXISTS] FileUploader + LoaderService pipeline
+Create Workflow  → [❌ MISSING] No workflow/guide creation UI
+Create Steps     → [❌ MISSING] No step entity, no step editor
+Select Model Region → [❌ MISSING] No raycasting, no mesh click handler
+Add Instruction  → [❌ MISSING] No text input linked to 3D space
+Save Guide       → [❌ MISSING] No persistence layer
+Publish Guide    → [❌ MISSING] No publication state machine
+Export Runtime JSON → [❌ MISSING] Only GLB export exists, no JSON schema
+```
+
+### Gap Detail
+
+**Gap 1: Workflow / Guide Creation UI**
+- Missing: A form to name a guide, select a model, and start step authoring
+- Complexity: Medium
+- Existing help: `FileUploader.tsx` multi-step dialog pattern can be reused as template for guide wizard
+
+**Gap 2: Step Management System**
+- Missing: Create, reorder, delete steps; link steps to model regions
+- Complexity: High
+- Existing help: Zustand store pattern in `configurator.store.ts` can be extended with `steps[]` slice
+
+**Gap 3: Mesh Region Selection via Raycasting**
+- Missing: User clicks a part in the 3D viewport → system identifies which `THREE.Mesh` was clicked
+- Complexity: Medium
+- Existing help: `ModelParser.ts` already registers all meshes by name/id. `ConfigMesh.ref` holds the actual `THREE.Mesh` object. Raycasting can use `ConfigMesh.id` → `ConfigMesh.name` mapping directly.
+- Implementation pattern: Add `onPointerDown` to `<Canvas>` in `CanvasRoot.tsx`, use `useThree().raycaster` to intersect `store.meshes.map(m => m.ref)`
+
+**Gap 4: Annotation Placement System**
+- Missing: Click a point in 3D space → place a label/pin → attach text instruction
+- Complexity: High
+- Existing help: `three.utils.ts` has vector math helpers. `SceneSetup.tsx` shows how to add objects to the scene.
+
+**Gap 5: Persistence Layer (Save/Load Guides)**
+- Missing: Database, API, auth
+- Complexity: Very High
+- Existing help: None — pure greenfield backend work
+
+**Gap 6: HoloLens Runtime JSON Export**
+- Missing: A structured JSON schema the Unity HoloLens app can consume
+- Complexity: Medium (schema design) + Low (serialization code)
+- Existing help: `exportToGLB.ts` shows the export trigger pattern; the GLB scene can be included as binary reference in the JSON bundle
+
+---
+
+## 8. Mesh Selection Assessment
+
+**Verdict: Infrastructure to identify meshes exists. Click-detection (raycasting) does not exist.**
+
+### What Exists
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Detect clicked meshes | ❌ Not implemented | No `onPointerDown`, no `Raycaster`, no intersection logic anywhere |
+| Access mesh names | ✅ Available | `ConfigMesh.name` stored in Zustand; sourced from `node.name` in `ModelParser.ts:88` |
+| Access mesh IDs | ✅ Available | `ConfigMesh.id` — unique UUID-like string generated by `ThreeUtils.generateId()` in `ModelParser.ts:87` |
+| Store mesh references | ✅ Available | `ConfigMesh.ref` is the live `THREE.Mesh` object, stored in Zustand `store.meshes[]` |
+
+### Exact Files Involved
+
+- **`src/types/ConfigMesh.ts`** — Defines the `ConfigMesh` interface with `id`, `name`, `visible`, `materialId`, `ref`
+- **`src/three/ModelParser.ts` (lines 85–95)** — Creates `ConfigMesh` entries during model traversal
+- **`src/store/configurator.store.ts` (lines 32, 50–51)** — Stores `meshes: ConfigMesh[]` and exposes `setMeshes()`, `toggleMeshVisibility()`
+- **`src/three/CanvasRoot.tsx`** — The `<Canvas>` element where `onPointerDown` must be added for raycasting
+- **`src/three/useConfiguratorScene.ts`** — Where raycasting hook should be integrated (has access to `useThree`)
+
+### Implementation Path for Raycasting
+
+The raycasting capability is **1 hook away**. Since all mesh `ref` objects are already stored in Zustand:
+
+```
+useThree().raycaster.intersectObjects(store.meshes.map(m => m.ref))
+→ intersects[0].object → match back to ConfigMesh by .ref
+→ dispatch setSelectedMesh(meshId) to new store slice
+```
+
+---
+
+## 9. Annotation System Assessment
+
+**Verdict: No annotation system exists. Must be built from scratch.**
+
+### What Would Need to Be Built
+
+**Architecture (proposed):**
+- A `useAnnotations` hook that listens to canvas pointer events after mesh selection
+- Annotations stored as `{ id, stepId, worldPosition: Vector3, normal: Vector3, label: string, type: 'info'|'warning'|'caution' }`
+- Rendered using R3F `<Html>` from `@react-three/drei` (already installed) for 2D overlay labels
+- Or `THREE.Sprite` + `CSS2DRenderer` for proper 3D billboarding
+
+**Data Model (proposed):**
+```typescript
+interface Annotation {
+  id: string;
+  stepId: string;
+  meshId: string;           // which mesh it belongs to
+  worldPosition: [number, number, number];  // THREE.Vector3 serializable
+  normal: [number, number, number];         // face normal for orientation
+  label: string;
+  type: 'info' | 'warning' | 'caution' | 'action';
+  color?: string;
+}
+```
+
+**Storage Format:** JSON, embedded in the Guide export payload
+
+**Adaptation to Step-Based Manufacturing Instructions:**
+- Each `WorkflowStep` contains an `annotations[]` array
+- When user scrubs through steps, annotations for the active step are shown; others are hidden
+- The `useAnimationMixer` pattern (step-gated playback) can directly serve as the template for step-gated annotation visibility
+
+---
+
+## 10. Database Assessment
+
+### Current Schema Summary
+**There is no database.** All data is held in JavaScript heap memory via a Zustand store. State resets completely on page refresh. The only "persistence" is the browser's `Object URL` blob (which is also volatile).
+
+### Proposed ShowaTech Database Schema
+
+```sql
+-- Models (uploaded CAD files)
+CREATE TABLE models (
+  id UUID PRIMARY KEY,
+  name VARCHAR(255),
+  original_filename VARCHAR(255),
+  format VARCHAR(10),        -- glb, gltf, fbx, obj
+  storage_url TEXT,          -- S3/Azure blob URL
+  uploaded_by UUID REFERENCES users(id),
+  uploaded_at TIMESTAMP,
+  file_size_bytes BIGINT
+);
+
+-- Guides (work instruction documents)
+CREATE TABLE guides (
+  id UUID PRIMARY KEY,
+  model_id UUID REFERENCES models(id),
+  title VARCHAR(255),
+  description TEXT,
+  aircraft_type VARCHAR(100),
+  status VARCHAR(20),        -- draft | under_review | published
+  version INTEGER DEFAULT 1,
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMP,
+  published_at TIMESTAMP
+);
+
+-- Steps (individual instruction steps within a guide)
+CREATE TABLE steps (
+  id UUID PRIMARY KEY,
+  guide_id UUID REFERENCES guides(id),
+  step_number INTEGER NOT NULL,
+  title VARCHAR(255),
+  instruction_text TEXT,
+  animation_clip_name VARCHAR(255), -- maps to THREE.AnimationClip.name
+  camera_position JSONB,     -- {x, y, z}
+  camera_target JSONB        -- {x, y, z}
+);
+
+-- Step Mesh Targets (which model regions are highlighted per step)
+CREATE TABLE step_mesh_targets (
+  id UUID PRIMARY KEY,
+  step_id UUID REFERENCES steps(id),
+  mesh_name VARCHAR(255),    -- maps to ConfigMesh.name / THREE.Mesh.name
+  highlight_color VARCHAR(7) -- hex color
+);
+
+-- Annotations (3D spatial labels within a step)
+CREATE TABLE annotations (
+  id UUID PRIMARY KEY,
+  step_id UUID REFERENCES steps(id),
+  label TEXT,
+  type VARCHAR(20),          -- info | warning | caution | action
+  world_x FLOAT, world_y FLOAT, world_z FLOAT,
+  normal_x FLOAT, normal_y FLOAT, normal_z FLOAT,
+  mesh_name VARCHAR(255)
+);
+
+-- Users
+CREATE TABLE users (
+  id UUID PRIMARY KEY,
+  email VARCHAR(255) UNIQUE,
+  name VARCHAR(255),
+  role VARCHAR(20)           -- author | reviewer | viewer | admin
+);
+```
+
+### What Changes Are Required
+- All data currently in Zustand RAM must be persisted to the above tables
+- A REST/GraphQL backend must be built to expose CRUD on Guide, Step, Annotation
+- Model files must move from blob Object URLs to a cloud storage bucket
+- A `GuideStore` and `StepStore` Zustand slice must be added alongside the existing `ConfiguratorState`
+
+---
+
+## 11. API Assessment
+
+### Existing Endpoints
+**None.** This is a static SPA with no network calls to any server. All operations are local.
+
+### Reusable Logic (not endpoints, but service patterns)
+| Service | What to Reuse |
+|---|---|
+| `loader.service.ts` | `loadGlb(url)` — can accept a server URL instead of blob URL |
+| `converter.service.ts` | Format conversion pipeline; can be moved to a Node.js/Python backend microservice |
+| `cache.service.ts` | Replace with Redis or browser IndexedDB; the interface pattern (`get/set/has`) is reusable |
+
+### New Endpoints Needed (ShowaTech Backend)
+
+```
+POST   /api/models                    Upload CAD model file
+GET    /api/models/:id                Fetch model metadata + storage URL
+GET    /api/models                    List all models
+
+POST   /api/guides                    Create new guide
+GET    /api/guides/:id                Fetch guide with all steps
+PUT    /api/guides/:id                Update guide metadata
+DELETE /api/guides/:id                Delete guide
+GET    /api/guides                    List guides (filter by status, model)
+POST   /api/guides/:id/publish        Change status to published
+
+POST   /api/guides/:id/steps          Create a step
+GET    /api/guides/:id/steps          List all steps for a guide
+PUT    /api/steps/:id                 Update step (instruction, animation, camera)
+DELETE /api/steps/:id                 Delete step
+POST   /api/steps/:id/reorder         Change step position
+
+POST   /api/steps/:id/annotations     Create annotation
+PUT    /api/annotations/:id           Update annotation
+DELETE /api/annotations/:id           Delete annotation
+
+POST   /api/guides/:id/export         Generate HoloLens runtime JSON bundle
+GET    /api/guides/:id/export/:format Export (json | glb)
+
+POST   /api/auth/login                Authenticate user
+GET    /api/auth/me                   Current user profile
+```
+
+---
+
+## 12. HoloLens Readiness Assessment
+
+**Verdict: Not ready. Only GLB export exists. A structured JSON runtime format must be designed and built.**
+
+### What Currently Exists
+- `exportToGLB.ts` — exports the Three.js scene as a `.glb` binary file (with hidden meshes removed)
+- This GLB file **can** be loaded by Unity on HoloLens 2 using MRTK + GLTFast or equivalent
+
+### What Is Missing for HoloLens Consumption
+
+A Unity/HoloLens application needs more than geometry. It needs a **Runtime JSON bundle** structured like:
+
+```json
+{
+  "guideId": "uuid",
+  "guideTitle": "Engine Cowling Assembly",
+  "modelFile": "model.glb",
+  "steps": [
+    {
+      "stepId": "uuid",
+      "stepNumber": 1,
+      "title": "Remove Panel Screws",
+      "instruction": "Using a T20 torx driver, remove all 6 panel screws.",
+      "highlightMeshes": ["Screw_01", "Screw_02", "Panel_A"],
+      "highlightColor": "#FF6B00",
+      "animation": "remove_panel_animation",
+      "cameraPosition": { "x": 1.2, "y": 0.5, "z": 2.0 },
+      "cameraTarget": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "annotations": [
+        {
+          "id": "uuid",
+          "label": "Torque: 2.5 Nm",
+          "type": "caution",
+          "position": { "x": 0.12, "y": 0.05, "z": 0.33 },
+          "normal": { "x": 0, "y": 1, "z": 0 }
+        }
+      ]
+    }
+  ]
+}
+```
+
+### What Must Be Added
+1. **Runtime JSON schema** — design the format above
+2. **Export serializer** — serialize `Guide + Steps + Annotations` from database to this JSON
+3. **GLB packaging** — bundle the GLB + JSON together (zip or embedded binary reference)
+4. **Unity SDK integration doc** — spec document for Unity HoloLens dev to consume the format
+
+The existing `exportToGLB.ts` shows the download-trigger pattern which can be reused for the JSON export endpoint.
+
+---
+
+## 13. Development Estimate
+
+### What Can Be Reused Immediately
+
+| Component | Files | Effort to Plug In |
+|---|---|---|
+| R3F Canvas + Lighting | `CanvasRoot.tsx`, `SceneSetup.tsx` | Zero — copy as-is |
+| Orbit Controls | `SceneSetup.tsx` | Zero |
+| GLB Loader | `loader.service.ts`, `useConfiguratorScene.ts` | Minimal — point to server URL |
+| Model Parser (mesh/material extraction) | `ModelParser.ts` | Zero |
+| Animation System | `useAnimationMixer.ts`, `AnimationPanel.tsx` | Minimal — link to step events |
+| Mesh Visibility | `MeshPanel.tsx`, store `toggleMeshVisibility` | Minimal — repurpose for highlighting |
+| File Upload UI | `FileUploader.tsx` | Low — restyle + add STEP format |
+| shadcn/ui Components | `components/ui/` (18 components) | Zero |
+| Zustand store pattern | `configurator.store.ts` | Low — extend, not replace |
+| GLB Export | `exportToGLB.ts` | Low — add JSON partner export |
+
+### What Needs Modification
+
+- `FileUploader.tsx` — add STEP/JT support, connect to backend upload API
+- `converter.service.ts` — add server-side conversion support
+- `configurator.store.ts` — add `GuideSlice`, `StepSlice`, `AnnotationSlice`
+- `Viewport.tsx` — add raycasting event handler
+- `Inspector.tsx` — replace statistics tab with Step Authoring panel
+- `TopBar.tsx` — replace Export GLB with Guide workflow controls
+
+### What Must Be Built From Scratch
+
+- Raycasting + mesh click handler
+- Annotation 3D placement + CSS2D rendering
+- Guide / Step / Annotation data models and Zustand slices
+- Entire backend (Node.js/Python + database)
+- Authentication system
+- Model cloud storage integration
+- HoloLens JSON export schema + serializer
+- Step authoring UI (step list, reordering, instruction editor)
+- Guide wizard (create/edit guide metadata)
+- Project management UI
+- Publish/review workflow
+
+### Reuse Percentage Estimates
+
+| Layer | Reuse % | Notes |
+|---|---|---|
+| **Frontend (3D Engine)** | **70%** | Canvas, lights, orbit, parser, animation all reusable |
+| **Frontend (UI/UX)** | **25%** | shadcn components reusable, but 75% of screens are new |
+| **Backend** | **0%** | No backend exists — full greenfield |
+| **Database** | **0%** | No database exists — full greenfield |
+| **3D Engine (Three.js)** | **80%** | Core rendering, traversal, export all reusable |
+| **State Management** | **30%** | Zustand pattern reusable; 70% of state is new |
+| **Overall Project** | **~30%** | Strong 3D foundation; everything domain-specific is missing |
+
+---
+
+## 14. Recommended Migration Plan
+
+### Phase 0 — Foundation (Week 1–2)
+
+1. **Audit mesh naming conventions** in existing aerospace CAD files — ensure model parts have meaningful names (e.g., `Screw_Panel_A_01` not `Mesh_001`)
+2. **Design the HoloLens Runtime JSON schema** — agree on the exact format with the Unity/HoloLens developer team
+3. **Select backend stack** — recommend Node.js + PostgreSQL + S3/Azure Blob Storage
+4. **Set up project skeleton** — monorepo with `frontend/` (existing Vite app) + `backend/` (new server)
+
+### Phase 1 — Backend Foundation (Week 3–5)
+
+5. **Implement backend database** — deploy PostgreSQL with the schema from Section 10
+6. **Implement model upload API** — `POST /api/models`, store to S3, return signed URL
+7. **Implement authentication** — JWT-based login, user roles (author/viewer)
+8. **Connect `LoaderService`** to load from server URL instead of blob — change `loadGlb(serverUrl)` call path
+
+### Phase 2 — Raycasting + Mesh Selection (Week 5–6)
+
+9. **Add `onPointerDown` to `CanvasRoot.tsx`** — integrate R3F pointer events
+10. **Build `useMeshSelection` hook** — raycaster intersects `store.meshes.map(m => m.ref)`, dispatches `selectedMeshId` to new store slice
+11. **Add visual highlight** on selected mesh — overlay emissive color using `ConfigMesh.ref.material`
+12. **Test with actual aerospace GLB model** — verify mesh names are accessible
+
+### Phase 3 — Guide + Step Authoring (Week 7–10)
+
+13. **Add `GuideSlice` to Zustand** — `currentGuide`, `steps[]`, `currentStepIndex`
+14. **Build Step List Panel** — replaces Statistics tab in `Inspector.tsx`, renders ordered step list
+15. **Build Step Editor** — text input for instruction, linked mesh highlight, animation clip selector
+16. **Build Guide Wizard** — modal to create/name a guide, select model
+17. **Connect CRUD to backend** — save steps to `/api/guides/:id/steps` on every edit
+
+### Phase 4 — Annotation System (Week 10–12)
+
+18. **Add `AnnotationSlice` to Zustand** — `annotations[]` keyed by `stepId`
+19. **Build annotation placement** — on second click after mesh selection, raycast for world position + face normal
+20. **Render annotations with `<Html>` from drei** — position in 3D space, styled label chip
+21. **Build annotation editor** — text input, type selector (info/warning/caution)
+22. **Step-gate annotation visibility** — show only current step's annotations
+
+### Phase 5 — Export + HoloLens Integration (Week 12–14)
+
+23. **Implement HoloLens JSON serializer** — traverse `Guide → Steps → Annotations` → emit JSON schema from Section 12
+24. **Bundle GLB + JSON** — create downloadable `.zip` with `model.glb` + `guide.json`
+25. **Implement Publish workflow** — status machine: Draft → Under Review → Published
+26. **Hand off to Unity developer** — provide JSON schema doc + sample bundle
+
+### Phase 6 — Polish + POC Demo (Week 14–16)
+
+27. **Test full author-to-HoloLens loop** with real aerospace model
+28. **Performance testing** — ensure annotation rendering is smooth at 60fps with 100+ meshes
+29. **User acceptance testing** with aerospace engineers
+30. **POC demo** — end-to-end demo: upload GLB → author guide with steps + annotations → export JSON → load in HoloLens Unity app
+
+---
+
+## Summary
+
+The codebase provides a **solid 3D viewing and mesh-inspection foundation** built on a production-quality stack (React 19 + Three.js + React Three Fiber + Zustand). The rendering engine, model loading pipeline, mesh extraction, and animation system are all directly reusable.
+
+However, the **entire ShowaTech domain layer is absent**:
+- No backend, no database, no authentication
+- No raycasting (the single most critical missing piece)
+- No annotation system
+- No guide/step/workflow concept
+- No HoloLens export format
+
+The recommended strategy is to **keep the 3D frontend intact** and build the authoring workflow on top of it, while constructing a full backend from scratch. The migration is achievable in approximately **14–16 weeks** for a POC.
