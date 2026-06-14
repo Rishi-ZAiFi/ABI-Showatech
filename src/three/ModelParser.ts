@@ -41,6 +41,9 @@ export class ModelParser {
     const meshes: ConfigMesh[] = [];
     const materialsMap = new Map<THREE.Material, ConfigMaterial>();
     const materialsList: ConfigMaterial[] = [];
+    // Stable, human-readable ids derived from mesh names so targets, part groups
+    // and per-step visibility re-link correctly when the same model is reloaded.
+    const usedMeshIds = new Set<string>();
 
     scene.traverse((node: THREE.Object3D) => {
       if (node instanceof THREE.Mesh) {
@@ -82,10 +85,18 @@ export class ModelParser {
           }
         });
 
-        // Create mesh entry
+        // Create mesh entry with a stable, name-derived id (deduped).
+        const meshName = node.name || `Mesh_${meshes.length}`;
+        let stableId = meshName;
+        let dupeIndex = 2;
+        while (usedMeshIds.has(stableId)) {
+          stableId = `${meshName}__${dupeIndex++}`;
+        }
+        usedMeshIds.add(stableId);
+
         const mesh: ConfigMesh = {
-          id: ThreeUtils.generateId(),
-          name: node.name || `Mesh_${meshes.length}`,
+          id: stableId,
+          name: meshName,
           visible: true,
           materialId: primaryMaterialId,
           ref: node,

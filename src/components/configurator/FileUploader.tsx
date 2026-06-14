@@ -7,6 +7,7 @@ import { useState, useRef } from 'react';
 import { useConfiguratorStore } from '../../store/configurator.store';
 import { LoaderService } from '../../services/loader.service';
 import { FileService } from '../../services/file.service';
+import { useToast } from '../../store/toast.store';
 import { Cloud, Upload, AlertCircle, FolderOpen } from 'lucide-react';
 
 interface FileWithPath extends File {
@@ -32,6 +33,7 @@ export function FileUploader() {
   const binInputRef = useRef<HTMLInputElement>(null);
   const textureInputRef = useRef<HTMLInputElement>(null);
   const store = useConfiguratorStore();
+  const toast = useToast();
 
   const getDisplayPath = (file: FileWithPath): string => {
     return file.relativePath || file.fullPath || file.name;
@@ -39,7 +41,7 @@ export function FileUploader() {
 
   const handleFile = async (file: FileWithPath, additionalFiles?: FileWithPath[]) => {
     if (!FileService.isSupportedFormat(file)) {
-      alert('Unsupported file format. Please open a .glb, .gltf, .fbx, or .obj');
+      toast.error('Unsupported file format. Please open a .glb, .gltf, .fbx, or .obj');
       return;
     }
 
@@ -59,7 +61,7 @@ export function FileUploader() {
       store.setModelUrl(url, file.name.split('.')[0]);
     } catch (error) {
       console.error('Failed to load model:', error);
-      alert('Failed to load model. See console for details.');
+      toast.error('Failed to load model. See console for details.');
       store.setIsLoading(false);
     }
   };
@@ -85,7 +87,7 @@ export function FileUploader() {
       const relatedFiles = [binFile, ...textureFiles];
       const url = await LoaderService.loadModelFromFile(gltfFile, relatedFiles);
       store.setModelUrl(url, gltfFile.name.split('.')[0]);
-      
+
       // Reset state
       setGltfFile(null);
       setBinFile(null);
@@ -93,7 +95,7 @@ export function FileUploader() {
       setStep('idle');
     } catch (error) {
       console.error('Failed to load model:', error);
-      alert('Failed to load model. See console for details.');
+      toast.error('Failed to load model. See console for details.');
       store.setIsLoading(false);
     }
   };

@@ -7,13 +7,9 @@ import { useEffect } from 'react';
 import { useThree } from '@react-three/fiber';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 import * as THREE from 'three';
-import { useAnimationMixer } from './useAnimationMixer';
 
 export function SceneSetup() {
   const { camera, scene, gl } = useThree();
-  
-  // Initialize animation mixer
-  useAnimationMixer();
 
   useEffect(() => {
     // Set up comprehensive lighting for product visualization

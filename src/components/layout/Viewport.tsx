@@ -8,7 +8,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useConfiguratorStore } from '../../store/configurator.store';
 import * as THREE from 'three';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../ui/dropdown-menu';
-import { Grid, Sun, Maximize2, Box } from 'lucide-react';
+import { Grid, Sun, Maximize2, Box, Loader2 } from 'lucide-react';
 import { Slider } from '../ui/slider';
 
 function ViewModeToolbar() {
@@ -44,7 +44,6 @@ function ViewModeToolbar() {
           const m = mesh.material as any;
           if (m) m.needsUpdate = true;
         } else {
-          // reset common flags if no original stored
           const mat = mesh.material as any;
           if (mat) {
             if ('wireframe' in mat) mat.wireframe = false;
@@ -52,11 +51,9 @@ function ViewModeToolbar() {
             mat.needsUpdate = true;
           }
         }
-        // remove any generated edge helpers
         const edgeObj = edgesRef.current.get(mesh.uuid);
         if (edgeObj) {
           if (edgeObj.parent) edgeObj.parent.remove(edgeObj);
-          // dispose geometry/material if present
           (edgeObj as any).traverse((child: any) => {
             if (child.geometry) child.geometry.dispose();
             if (child.material) child.material.dispose();
@@ -64,7 +61,6 @@ function ViewModeToolbar() {
           edgesRef.current.delete(mesh.uuid);
         }
 
-        // dispose generated depth-only material if it wasn't the original
         try {
           if (currentMat && currentMat !== orig) {
             if (Array.isArray(currentMat)) {
@@ -92,18 +88,15 @@ function ViewModeToolbar() {
     scene.traverse((obj) => {
       if ((obj as any).isMesh) {
         const mesh = obj as THREE.Mesh;
-        // ensure original material saved
         saveOriginal(mesh);
 
         if (next === 'wireframe') {
-          // replace material with depth-only unlit material so no shading is visible
           const depthMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: false });
           depthMat.depthWrite = true;
           depthMat.depthTest = true;
-          depthMat.colorWrite = false; // write depth only, not color
+          depthMat.colorWrite = false;
           mesh.material = depthMat as any;
 
-          // create and add edge lines if not already created
           if (!edgesRef.current.has(mesh.uuid) && (mesh.geometry as any)) {
             try {
               const geo = new THREE.EdgesGeometry((mesh.geometry as THREE.BufferGeometry), 15 * (Math.PI / 180));
@@ -116,7 +109,6 @@ function ViewModeToolbar() {
               mesh.add(lines);
               edgesRef.current.set(mesh.uuid, lines);
             } catch (e) {
-              // fallback: enable material wireframe if edges creation fails
               const fm = mesh.material as any;
               if (Array.isArray(fm)) fm.forEach((m: any) => (m.wireframe = true));
               else if (fm) fm.wireframe = true;
@@ -129,7 +121,6 @@ function ViewModeToolbar() {
     setMode(next);
   };
 
-  // Apply HDRI intensity to all standard materials in the scene
   const applyHdriIntensityToScene = (intensity: number) => {
     if (!scene) return;
     scene.traverse((obj) => {
@@ -210,10 +201,20 @@ function ViewModeToolbar() {
 }
 
 export function Viewport() {
+  const isLoading = useConfiguratorStore((s) => s.isLoading);
+
   return (
     <div className="flex-1 rounded-lg bg-card shadow-lg relative overflow-hidden">
       <CanvasRoot className="w-full h-full" />
       <ViewModeToolbar />
+
+      {/* Loading overlay — shown while a model is being parsed */}
+      {isLoading && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-background/75 backdrop-blur-sm">
+          <Loader2 className="w-10 h-10 animate-spin text-sky-400" />
+          <p className="text-sm text-muted-foreground">Loading model...</p>
+        </div>
+      )}
     </div>
   );
 }

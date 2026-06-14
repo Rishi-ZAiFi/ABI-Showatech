@@ -21,16 +21,23 @@ Workflow
   └── Step[]
         ├── title: string
         ├── instruction: string  (HTML — authored in InstructionEditor)
-        ├── targetIds: string[]  → Target { meshId, meshName }
-        └── annotationIds: string[] → Annotation { position: Vector3, label }
+        ├── targetIds: string[]      → Target { meshId, meshName }
+        ├── annotationIds: string[]  → Annotation { position: Vector3, label }
+        ├── visibility?: VisibilityAction[]   (Slice 12 — cumulative show/hide)
+        └── camera?: StepCamera               (Slice 13 — saved viewpoint)
+
+PartGroup[]   (Slice 11 — model-level, in configurator store)
+  └── { name, tag, color, meshIds[] }   // a logical "part" = several meshes
 ```
 
 All state lives in two Zustand stores:
 
-- `configurator.store.ts` — model URL, meshes, materials, animations
-- `workflow.store.ts` — workflows, steps, targets, annotations, preview/placement modes
+- `configurator.store.ts` — model URL, meshes, materials, animations, **multi-selection (`selectedMeshIds`), part groups (`partGroups`)**
+- `workflow.store.ts` — workflows, steps, targets, annotations, preview/placement modes, **per-step visibility & camera actions**
 
-Persistence via Zustand `persist` middleware → `localStorage`. Manual save/load via JSON file (`.showatec.json`).
+Mesh ids are **derived from mesh names** (deduped) in `ModelParser`, so targets, part groups, and visibility re-link when the same model is reloaded (Slice 14).
+
+Persistence via Zustand `persist` middleware → `localStorage`. Manual save/load via JSON file (`.showatec.json`); ZIP export bundles `workflow.json` (incl. part groups) + `model.glb`. Per-step visibility & camera persist inline on `Step`.
 
 ---
 
@@ -42,16 +49,23 @@ App
 ├── Viewport (Canvas)
 │   ├── SceneSetup
 │   ├── ModelLoader → ModelParser
+│   │     ├── useMeshSelection      (multi-select via modifier-click — Slice 11)
+│   │     ├── usePreviewHighlight   (amber overlays — Slice 07)
+│   │     ├── useStepVisibility     (cumulative show/hide in preview — Slice 12)
+│   │     ├── useCameraFlyTo        (saved-camera or auto-frame — Slice 13)
+│   │     └── useCameraCapture      (snapshot camera onto active step — Slice 13)
 │   ├── AnnotationLayer        (Slice 06 — sphere pins + HTML callouts)
 │   └── useAnnotationPlacement (Slice 06 — raycasting click handler)
 └── Inspector
-    ├── MeshPanel / MaterialPanel / AnimationPanel  (configurator tabs)
+    ├── MeshPanel / PartsPanel / MaterialPanel / AnimationPanel  (Scene tab — PartsPanel = Slice 11)
     └── WorkflowPanel
           ├── SaveLoadBar
           ├── StepRow[]
           ├── StepEditor
           │     ├── InstructionEditor   (Tiptap rich text)
           │     ├── MeshTargets
+          │     ├── VisibilitySection   (per-step show/hide + one-step swap — Slices 12/13)
+          │     ├── Camera View block   (capture/clear — Slice 13)
           │     └── AnnotationsSection
           └── PreviewPanel             (Slice 07)
 ```
